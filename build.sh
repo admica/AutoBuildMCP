@@ -3,23 +3,33 @@
 # Exit on error
 set -e
 
-# Create virtual environment
+# Colors
+CYAN='\033[1;34m'
+GREEN='\033[0;32m'
+NC='\033[0m' # No Color
+
+# --- Create Virtual Environment ---
+echo -e "${CYAN}Creating Virtual Environment...${NC}"
 if [ ! -d "venv" ]; then
-  echo "Creating virtual environment 'venv'..."
   python3 -m venv venv
+  echo "Virtual environment 'venv' created."
+else
+  echo "Virtual environment 'venv' already exists."
 fi
 
-# Activate virtual environment
+# --- Activate Virtual Environment ---
 source venv/bin/activate
 
-echo "Virtual environment activated."
+# --- Upgrade Pip ---
+echo -e "\n${CYAN}Upgrading Pip...${NC}"
+python -m pip install --upgrade pip
 
-# Install dependencies from requirements.txt if it exists
+# --- Install Dependencies ---
 if [ -f "requirements.txt" ]; then
-  echo "Installing requirements from requirements.txt..."
+  echo -e "\n${CYAN}Installing Dependencies from requirements.txt...${NC}"
   pip install -r requirements.txt
 else
-  echo "No requirements.txt file found. Skipping dependency installation."
+  echo -e "\n${CYAN}Skipping Dependency Installation (requirements.txt not found).${NC}"
 fi
 
-echo "Build process complete."
+echo -e "\n${GREEN}Build process complete. Environment is ready.${NC}"
