@@ -52,7 +52,18 @@ curl -X POST -H "Content-Type: application/json" \
 http://localhost:5501/mcp
 ```
 
+### Getting Help (`get_help_info`)
+
+To retrieve information about the available methods and their usage, call the `get_help_info` method.
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+-d '{"jsonrpc": "2.0", "method": "get_help_info", "params": {}, "id": 3}' \
+http://localhost:5501/mcp
+```
+
 ## Testing
+
 
 To run the test suite, execute the `test.sh` script:
 

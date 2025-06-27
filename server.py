@@ -33,6 +33,37 @@ BUILD_LOCK = threading.Lock()
 BUILD_TIMER = None
 OBSERVER = None
 
+HELP_INFO = {
+    "description": "This server provides Model Context Protocol (MCP) endpoints for automating and monitoring code builds.",
+    "methods": {
+        "configure_build": {
+            "description": "Configures the build process and starts file watching.",
+            "params": {
+                "work_dir": "Absolute path to the directory to monitor for changes.",
+                "build_command": "The shell command to execute for building (e.g., './build.sh' or 'pio run').",
+                "build_delay": "Optional: Delay in seconds before triggering a build after a file change (default: 2.0, min: 0.5, max: 10.0)."
+            },
+            "returns": "Success message if configuration is applied, or an error."
+        },
+        "get_build_status": {
+            "description": "Retrieves the current build status and last build output.",
+            "params": {},
+            "returns": {
+                "status": "Current build status (idle, building, success, failed).",
+                "last_output": "Output from the last build attempt.",
+                "last_started": "Timestamp of when the last build started (ISO format).",
+                "last_ended": "Timestamp of when the last build ended (ISO format).",
+                "message": "Optional: Estimated time until current build finishes (only if building)."
+            }
+        },
+        "get_help_info": {
+            "description": "Provides information about the available methods and their usage.",
+            "params": {},
+            "returns": "JSON object describing all available methods and their usage."
+        }
+    }
+}
+
 # Load build history safely
 if os.path.exists(BUILD_HISTORY_FILE):
     try:
@@ -209,6 +240,12 @@ async def mcp_endpoint(request: Request):
                 "id": req["id"]
             }
         
+        elif method == "get_help_info":
+            return {
+                "jsonrpc": "2.0",
+                "result": HELP_INFO,
+                "id": req["id"]
+            }
         else:
             return {
                 "jsonrpc": "2.0",
