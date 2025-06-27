@@ -2,7 +2,7 @@
 
 The AutoBuildMCP server is a Model Context Protocol (MCP) server designed to automate and monitor code builds. It exposes a set of tools that an MCP-compliant agent can use to watch a directory for code changes, trigger builds, and monitor the status.
 
-It uses a JSON-RPC 2.0 interface, as required by the MCP standard.
+It uses a JSON-RPC 2.0 interface.
 
 ## Setup
 
@@ -20,44 +20,48 @@ It uses a JSON-RPC 2.0 interface, as required by the MCP standard.
 
 ## Interacting with the MCP Server
 
-All interactions happen via JSON-RPC 2.0 messages sent to the `/api/v1/jsonrpc` endpoint. You can use `curl` to interact with it manually.
+All interactions happen via JSON-RPC 2.0 messages sent to the `/mcp` endpoint. You can use `curl` to interact with it manually.
 
-### Discovering Tools (`mcp.getSpec`)
+### Configuring the Build (`configure_build`)
 
-To see what tools the server provides, call the `mcp.getSpec` method.
-
-```bash
-curl -X POST -H "Content-Type: application/json" \
--d '{"jsonrpc": "2.0", "method": "mcp.getSpec", "id": 1}' \
-http://localhost:5501/api/v1/jsonrpc
-```
-
-### Configuring the Build (`mcp.setConfig`)
-
-To start watching a directory, call the `mcp.setConfig` method with the required parameters.
+To start watching a directory, call the `configure_build` method with the required parameters.
 
 ```bash
 curl -X POST -H "Content-Type: application/json" \
 -d '{
   "jsonrpc": "2.0",
-  "method": "mcp.setConfig",
+  "method": "configure_build",
   "params": {
-    "work_dir": "/home/user/mcp/AutoBuildMCP", 
-    "build_command": "./build.sh", 
+    "work_dir": "/home/user/mcp/AutoBuildMCP",
+    "build_command": "./build.sh",
     "build_delay": 2.0
   },
-  "id": 2
+  "id": 1
 }' \
-http://localhost:5501/api/v1/jsonrpc
+http://localhost:5501/mcp
 ```
 *Note: Replace `"/home/user/mcp/AutoBuildMCP"` with the absolute path to the project you want to monitor.*
 
-### Checking Status (`mcp.getStatus`)
+### Checking Status (`get_build_status`)
 
-To check the current build status, call the `mcp.getStatus` method.
+To check the current build status, call the `get_build_status` method.
 
 ```bash
 curl -X POST -H "Content-Type: application/json" \
--d '{"jsonrpc": "2.0", "method": "mcp.getStatus", "id": 3}' \
-http://localhost:5501/api/v1/jsonrpc
+-d '{"jsonrpc": "2.0", "method": "get_build_status", "params": {}, "id": 2}' \
+http://localhost:5501/mcp
 ```
+
+## Testing
+
+To run the test suite, execute the `test.sh` script:
+
+```bash
+./test.sh
+```
+This script activates the virtual environment and runs the `test/curl.py` script, which contains automated tests for the server's endpoints.
+
+## Build History
+
+The server maintains a `build_history.json` file in the working directory to store the duration of successful and failed builds. This data is used to provide estimated build times.
+
