@@ -10,4 +10,4 @@ source venv/bin/activate
 
 # --- Start Server ---
 echo -e "${YELLOW}Starting AutoBuildMCP server...${NC}"
-python server.py
+venv/bin/python server.py

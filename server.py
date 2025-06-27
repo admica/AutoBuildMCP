@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
-# PATH: ./server.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import os
 import subprocess
@@ -19,7 +17,7 @@ app = FastAPI()
 CONFIG = {
     "work_dir": None,
     "build_command": None,
-    "build_delay": 2.0, # Default delay in seconds
+    "build_delay": 2.0,
     "output_log": "build_output.log",
     "error_log": "build_errors.log"
 }
@@ -60,15 +58,11 @@ class FileChangeHandler(FileSystemEventHandler):
     def on_any_event(self, event):
         if event.is_directory or event.src_path.endswith((".log", ".json")):
             return
-
         global BUILD_TIMER
         if BUILD_TIMER and BUILD_TIMER.is_alive():
             BUILD_TIMER.cancel()
-
         BUILD_TIMER = threading.Timer(CONFIG["build_delay"], trigger_build)
         BUILD_TIMER.start()
-
-
 
 def run_build():
     if not CONFIG["work_dir"] or not CONFIG["build_command"]:
@@ -134,63 +128,100 @@ def calculate_estimated_time():
         "fail_estimate": round(weighted_avg(failed_times), 1)
     }
 
-@app.get("/setup")
-async def setup():
-    if not CONFIG["work_dir"] or not CONFIG["build_command"]:
-        return {
-            "message": "Setup required: POST to /set_directory_and_command with work_dir, build_command, and optional build_delay.",
-            "defaults": {
-                "output_log": CONFIG["output_log"],
-                "error_log": CONFIG["error_log"],
-                "build_delay": CONFIG["build_delay"]
+@app.post("/mcp")
+async def mcp_endpoint(request: Request):
+    try:
+        req = await request.json()
+        if not isinstance(req, dict) or req.get("jsonrpc") != "2.0" or "method" not in req or "id" not in req:
+            return {
+                "jsonrpc": "2.0",
+                "error": {"code": -32600, "message": "Invalid Request"},
+                "id": req.get("id", None)
             }
+        
+        method = req["method"]
+        params = req.get("params", {})
+        
+        if method == "configure_build":
+            if not isinstance(params, dict):
+                return {
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32602, "message": "Invalid params"},
+                    "id": req["id"]
+                }
+            try:
+                setup = SetupRequest(**params)
+                if not os.path.isdir(setup.work_dir):
+                    return {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32000, "message": "Invalid working directory"},
+                        "id": req["id"]
+                    }
+                if not setup.build_command.strip() or not setup.build_command.startswith(("pio ", "./build.sh")):
+                    return {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32000, "message": "Invalid build command"},
+                        "id": req["id"]
+                    }
+                global OBSERVER, BUILD_TIMER
+                if OBSERVER:
+                    OBSERVER.stop()
+                    try:
+                        OBSERVER.join(timeout=1)
+                    except TimeoutError:
+                        if CONFIG["work_dir"]:  # Only log if work_dir is set
+                            with open(os.path.join(CONFIG["work_dir"], CONFIG["error_log"]), "a") as f:
+                                f.write(f"[{datetime.now().isoformat()}] Warning: Observer did not stop cleanly\n")
+                if BUILD_TIMER and BUILD_TIMER.is_alive():
+                    BUILD_TIMER.cancel()
+                CONFIG["work_dir"] = setup.work_dir
+                CONFIG["build_command"] = setup.build_command
+                CONFIG["build_delay"] = min(max(0.5, setup.build_delay), 10.0)
+                observer = Observer()
+                observer.schedule(FileChangeHandler(), path=CONFIG["work_dir"], recursive=True)
+                observer.start()
+                OBSERVER = observer
+                return {
+                    "jsonrpc": "2.0",
+                    "result": "Configuration set, file watching started",
+                    "id": req["id"]
+                }
+            except ValueError as e:
+                return {
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32602, "message": f"Invalid params: {str(e)}"},
+                    "id": req["id"]
+                }
+        
+        elif method == "get_build_status":
+            estimates = calculate_estimated_time()
+            response = {
+                "status": BUILD_STATUS["status"],
+                "last_output": BUILD_STATUS["last_output"],
+                "last_started": BUILD_STATUS["last_started"],
+                "last_ended": BUILD_STATUS["last_ended"]
+            }
+            if BUILD_STATUS["status"] == "building":
+                response["message"] = f"Check back in ~{estimates['success_estimate']} seconds"
+            return {
+                "jsonrpc": "2.0",
+                "result": response,
+                "id": req["id"]
+            }
+        
+        else:
+            return {
+                "jsonrpc": "2.0",
+                "error": {"code": -32601, "message": "Method not found"},
+                "id": req["id"]
+            }
+    
+    except json.JSONDecodeError:
+        return {
+            "jsonrpc": "2.0",
+            "error": {"code": -32700, "message": "Parse error"},
+            "id": None
         }
-    return {
-        "message": "Server configured.",
-        "config": {
-            "work_dir": CONFIG["work_dir"],
-            "build_command": CONFIG["build_command"],
-            "build_delay": CONFIG["build_delay"],
-            "output_log": os.path.join(CONFIG["work_dir"], CONFIG["output_log"]),
-            "error_log": os.path.join(CONFIG["work_dir"], CONFIG["error_log"])
-        }
-    }
-
-@app.post("/set_directory_and_command")
-async def set_directory_and_command(request: SetupRequest):
-    if not os.path.isdir(request.work_dir):
-        raise HTTPException(status_code=400, detail="Invalid working directory")
-    if not request.build_command.strip() or not request.build_command.startswith(("pio ", "./build.sh")):
-        raise HTTPException(status_code=400, detail="Invalid build command")
-    global OBSERVER
-    if OBSERVER:
-        OBSERVER.stop()
-        try:
-            OBSERVER.join(timeout=1)
-        except TimeoutError:
-            with open(os.path.join(CONFIG["work_dir"] or ".", CONFIG["error_log"]), "a") as f:
-                f.write(f"[{datetime.now().isoformat()}] Warning: Observer did not stop cleanly\n")
-    CONFIG["work_dir"] = request.work_dir
-    CONFIG["build_command"] = request.build_command
-    CONFIG["build_delay"] = min(max(0.5, request.build_delay), 10.0) # 0.5s to 10s
-    observer = Observer()
-    observer.schedule(FileChangeHandler(), path=CONFIG["work_dir"], recursive=True)
-    observer.start()
-    OBSERVER = observer
-    return {"message": "Configuration set, file watching started"}
-
-@app.get("/build_status")
-async def build_status():
-    estimates = calculate_estimated_time()
-    response = {
-        "status": BUILD_STATUS["status"],
-        "last_output": BUILD_STATUS["last_output"],
-        "last_started": BUILD_STATUS["last_started"],
-        "last_ended": BUILD_STATUS["last_ended"]
-    }
-    if BUILD_STATUS["status"] == "building":
-        response["message"] = f"Check back in ~{estimates['success_estimate']} seconds"
-    return response
 
 if __name__ == "__main__":
     import uvicorn
