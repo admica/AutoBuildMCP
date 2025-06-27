@@ -5,12 +5,14 @@ The AutoBuildMCP server is a focused FastAPI-based MCP server designed to automa
 ## Setup
 
 1.  **Build the environment:**
+
     Run the `build.sh` script to create a Python virtual environment and install the required dependencies.
     ```bash
     ./build.sh
     ```
 
 2.  **Start the server:**
+
     Activate the virtual environment and run the `server.py` script.
     ```bash
     source venv/bin/activate
@@ -19,6 +21,7 @@ The AutoBuildMCP server is a focused FastAPI-based MCP server designed to automa
     The server will start on port 5501.
 
 3.  **Configure the project:**
+
     Query the `/setup` endpoint to check the initial (unconfigured) status. Then, POST to `/set_directory_and_command` to set the working directory and the build command to execute.
 
     Tell your LLM to do this, or you can manually do it:
