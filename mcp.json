@@ -1,0 +1,21 @@
+{
+  "name": "AutoBuildMCP",
+  "version": "1.0.0",
+  "description": "MCP server for continuous build, monitoring, and status with timing estimates",
+  "main": "server.py",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5501,
+    "type": "http"
+  },
+  "dependencies": [
+    "fastapi==0.115.0",
+    "uvicorn==0.32.0",
+    "watchdog==5.0.3"
+  ],
+  "endpoints": {
+    "setup": "/setup",
+    "set_directory_and_command": "/set_directory_and_command",
+    "build_status": "/build_status"
+  }
+}
