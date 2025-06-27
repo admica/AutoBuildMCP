@@ -22,9 +22,11 @@ The AutoBuildMCP server is a focused FastAPI-based MCP server designed to automa
 
 3.  **Configure the project:**
 
-    Query the `/setup` endpoint to check the initial (unconfigured) status. Then, POST to `/set_directory_and_command` to set the working directory and the build command to execute.
-
     Tell your LLM to do this, or you can manually do it:
+
+    3a. Query the `/setup` endpoint to check the initial (unconfigured) status.
+
+    3b. POST to `/set_directory_and_command` to set the working directory and the build command to execute.
 
     Example using `curl`:
     ```bash
