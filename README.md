@@ -18,9 +18,25 @@ It uses a JSON-RPC 2.0 interface.
     ./run.sh
     ```
 
+3.  **Run the self-tests (Optional)**
+    Use the `test.sh` script to perform self test of all endpoints. This will call build.sh on itself.
+    ```bash
+    ./test.sh
+    ```
+
 ## Interacting with the MCP Server
 
 All interactions happen via JSON-RPC 2.0 messages sent to the `/mcp` endpoint. You can use `curl` to interact with it manually.
+
+### Getting Help (`get_help_info`)
+
+To retrieve information about the available methods and their usage, call the `get_help_info` method.
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+-d '{"jsonrpc": "2.0", "method": "get_help_info", "params": {}, "id": 3}' \
+http://localhost:5501/mcp
+```
 
 ### Configuring the Build (`configure_build`)
 
@@ -52,18 +68,7 @@ curl -X POST -H "Content-Type: application/json" \
 http://localhost:5501/mcp
 ```
 
-### Getting Help (`get_help_info`)
-
-To retrieve information about the available methods and their usage, call the `get_help_info` method.
-
-```bash
-curl -X POST -H "Content-Type: application/json" \
--d '{"jsonrpc": "2.0", "method": "get_help_info", "params": {}, "id": 3}' \
-http://localhost:5501/mcp
-```
-
 ## Testing
-
 
 To run the test suite, execute the `test.sh` script:
 
