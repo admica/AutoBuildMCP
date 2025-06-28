@@ -1,15 +1,18 @@
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import EventSourceResponse
 from pydantic import BaseModel
 import os
 import subprocess
 import json
 import shlex
+import shutil
 from datetime import datetime
 import time
+import asyncio
+import tempfile
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import threading
-import tempfile
 
 app = FastAPI()
 
@@ -32,6 +35,35 @@ BUILD_HISTORY = {"successful_builds": [], "failed_builds": []}
 BUILD_LOCK = threading.Lock()
 BUILD_TIMER = None
 OBSERVER = None
+
+# MCP tool schema for discovery
+TOOLS_SCHEMA = {
+    "tools": [
+        {
+            "name": "configure_build",
+            "description": "Configures the build process and starts file watching",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "work_dir": {"type": "string", "description": "Absolute path to the directory to monitor"},
+                    "build_command": {"type": "string", "description": "Shell command to execute for building"},
+                    "build_delay": {"type": "number", "minimum": 0.5, "maximum": 10.0, "description": "Delay in seconds before triggering a build"}
+                },
+                "required": ["work_dir", "build_command"]
+            }
+        },
+        {
+            "name": "get_build_status",
+            "description": "Retrieves the current build status and last build output",
+            "input_schema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "get_help_info",
+            "description": "Provides information about available methods and their usage",
+            "input_schema": {"type": "object", "properties": {}}
+        }
+    ]
+}
 
 HELP_INFO = {
     "description": "This server provides Model Context Protocol (MCP) endpoints for automating and monitoring code builds.",
@@ -67,7 +99,7 @@ HELP_INFO = {
 # Load build history safely
 if os.path.exists(BUILD_HISTORY_FILE):
     try:
-        with open(BUILD_HISTORY_FILE, "r") as f:
+        with open(BUILD_HISTORY_file, "r") as f:
             BUILD_HISTORY.update(json.load(f))
     except json.JSONDecodeError:
         BUILD_HISTORY = {"successful_builds": [], "failed_builds": []}
@@ -105,13 +137,14 @@ def run_build():
     output_log = os.path.join(CONFIG["work_dir"], CONFIG["output_log"])
     error_log = os.path.join(CONFIG["work_dir"], CONFIG["error_log"])
     os.makedirs(os.path.dirname(output_log) or ".", exist_ok=True)
-    
+
     try:
         process = subprocess.run(
             shlex.split(CONFIG["build_command"]),
             capture_output=True,
             text=True,
-            cwd=CONFIG["work_dir"]
+            cwd=CONFIG["work_dir"],
+            timeout=300  # 5-minute timeout
         )
         with open(output_log, "a") as f:
             f.write(f"[{datetime.now().isoformat()}]\n{process.stdout}\n")
@@ -130,21 +163,27 @@ def run_build():
             with open(error_log, "a") as f:
                 f.write(f"[{datetime.now().isoformat()}]\n{process.stderr}\n")
         BUILD_STATUS["last_output"] = process.stdout
+    except subprocess.TimeoutExpired:
+        BUILD_STATUS["status"] = "failed"
+        BUILD_STATUS["last_output"] = "Build timed out"
+        with open(error_log, "a") as f:
+            f.write(f"[{datetime.now().isoformat()}] Error: Build timed out\n")
     except Exception as e:
         BUILD_STATUS["status"] = "failed"
+        BUILD_STATUS["last_output"] = str(e)
         with open(error_log, "a") as f:
             f.write(f"[{datetime.now().isoformat()}] Error: {str(e)}\n")
-        BUILD_STATUS["last_output"] = str(e)
     BUILD_STATUS["last_ended"] = datetime.now().isoformat()
-    with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp:
-        json.dump(BUILD_HISTORY, temp)
-        temp_file = temp.name
-    os.replace(temp_file, BUILD_HISTORY_FILE)
+    with BUILD_LOCK:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp:
+            json.dump(BUILD_HISTORY, temp)
+            temp_file = temp.name
+        os.replace(temp_file, BUILD_HISTORY_FILE)
 
 def calculate_estimated_time():
     successful_times = BUILD_HISTORY["successful_builds"]
     failed_times = BUILD_HISTORY["failed_builds"]
-    
+
     def weighted_avg(times):
         if not times:
             return CONFIG["build_delay"]
@@ -159,6 +198,25 @@ def calculate_estimated_time():
         "fail_estimate": round(weighted_avg(failed_times), 1)
     }
 
+@app.get("/mcp/tools")
+async def get_tools():
+    return TOOLS_SCHEMA
+
+@app.get("/mcp/sse")
+async def sse_endpoint():
+    async def event_generator():
+        last_status = None
+        while True:
+            current_status = json.dumps(BUILD_STATUS)
+            if current_status != last_status:
+                yield {
+                    "event": "build_status",
+                    "data": current_status
+                }
+                last_status = current_status
+            await asyncio.sleep(1)  # Check every second
+    return EventSourceResponse(event_generator())
+
 @app.post("/mcp")
 async def mcp_endpoint(request: Request):
     try:
@@ -169,10 +227,10 @@ async def mcp_endpoint(request: Request):
                 "error": {"code": -32600, "message": "Invalid Request"},
                 "id": req.get("id", None)
             }
-        
+
         method = req["method"]
         params = req.get("params", {})
-        
+
         if method == "configure_build":
             if not isinstance(params, dict):
                 return {
@@ -188,21 +246,18 @@ async def mcp_endpoint(request: Request):
                         "error": {"code": -32000, "message": "Invalid working directory"},
                         "id": req["id"]
                     }
-                if not setup.build_command.strip() or not setup.build_command.startswith(("pio ", "./build.sh")):
+                # Validate build command
+                cmd_parts = shlex.split(setup.build_command)
+                if not cmd_parts or not shutil.which(cmd_parts[0]):
                     return {
                         "jsonrpc": "2.0",
-                        "error": {"code": -32000, "message": "Invalid build command"},
+                        "error": {"code": -32000, "message": "Invalid or non-executable build command"},
                         "id": req["id"]
                     }
                 global OBSERVER, BUILD_TIMER
-                if OBSERVER:
+                if OBSERVER and OBSERVER.is_alive():
                     OBSERVER.stop()
-                    try:
-                        OBSERVER.join(timeout=1)
-                    except TimeoutError:
-                        if CONFIG["work_dir"]:  # Only log if work_dir is set
-                            with open(os.path.join(CONFIG["work_dir"], CONFIG["error_log"]), "a") as f:
-                                f.write(f"[{datetime.now().isoformat()}] Warning: Observer did not stop cleanly\n")
+                    OBSERVER.join()  # Ensure full cleanup
                 if BUILD_TIMER and BUILD_TIMER.is_alive():
                     BUILD_TIMER.cancel()
                 CONFIG["work_dir"] = setup.work_dir
@@ -223,7 +278,7 @@ async def mcp_endpoint(request: Request):
                     "error": {"code": -32602, "message": f"Invalid params: {str(e)}"},
                     "id": req["id"]
                 }
-        
+
         elif method == "get_build_status":
             estimates = calculate_estimated_time()
             response = {
@@ -239,7 +294,7 @@ async def mcp_endpoint(request: Request):
                 "result": response,
                 "id": req["id"]
             }
-        
+
         elif method == "get_help_info":
             return {
                 "jsonrpc": "2.0",
@@ -252,7 +307,7 @@ async def mcp_endpoint(request: Request):
                 "error": {"code": -32601, "message": "Method not found"},
                 "id": req["id"]
             }
-    
+
     except json.JSONDecodeError:
         return {
             "jsonrpc": "2.0",
@@ -262,4 +317,5 @@ async def mcp_endpoint(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5501)
+    port = int(os.getenv("MCP_PORT", 5501))
+    uvicorn.run(app, host="0.0.0.0", port=port)
