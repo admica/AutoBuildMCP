@@ -1,0 +1,12 @@
+[Unit]
+Description=AutoBuildMCP Server
+After=network.target
+
+[Service]
+ExecStart=/home/user/mcp/AutoBuildMCP/run.sh
+WorkingDirectory=/home/user/mcp/AutoBuildMCP
+Restart=always
+User=user
+
+[Install]
+WantedBy=multi-user.target
