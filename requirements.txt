@@ -1,4 +1,4 @@
-fastapi==0.115.0
-uvicorn==0.32.0
-watchdog==5.0.3
+fastapi>=0.115.0
 fastapi-jsonrpc==2.2.0
+uvicorn>=0.35.0
+watchdog>=6.0.0
