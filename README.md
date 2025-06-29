@@ -13,7 +13,7 @@ It uses a JSON-RPC 2.0 interface.
     ```
 
 2.  **Start the Server:**
-    Use the `run.sh` script, which activates the virtual environment and starts the server on `http://localhost:5501`.
+    Use the `run.sh` script, which activates the virtual environment and starts the server on `http://localhost:5305`.
     ```bash
     ./run.sh
     ```
@@ -35,7 +35,7 @@ To retrieve information about the available methods and their usage, call the `g
 ```bash
 curl -X POST -H "Content-Type: application/json" \
 -d '{"jsonrpc": "2.0", "method": "get_help_info", "params": {}, "id": 3}' \
-http://localhost:5501/mcp
+http://localhost:5305/mcp
 ```
 
 ### Configuring the Build (`configure_build`)
@@ -54,7 +54,7 @@ curl -X POST -H "Content-Type: application/json" \
   },
   "id": 1
 }' \
-http://localhost:5501/mcp
+http://localhost:5305/mcp
 ```
 *Note: Replace `"/home/user/mcp/AutoBuildMCP"` with the absolute path to the project you want to monitor.*
 
@@ -65,7 +65,7 @@ To check the current build status, call the `get_build_status` method.
 ```bash
 curl -X POST -H "Content-Type: application/json" \
 -d '{"jsonrpc": "2.0", "method": "get_build_status", "params": {}, "id": 2}' \
-http://localhost:5501/mcp
+http://localhost:5305/mcp
 ```
 
 ## Testing

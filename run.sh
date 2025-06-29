@@ -24,18 +24,6 @@ if [ ! -f "server.py" ]; then
     exit 1
 fi
 
-if ! pip show sse-starlette > /dev/null 2>&1; then
-    echo -e "${YELLOW}sse-starlette not found. Installing...${NC}"
-    pip install sse-starlette
-fi
-
-export MCP_PORT=${MCP_PORT:-5501}
-
-# Check for SSL certificates before starting
-if [ ! -f "ssl/cert.pem" ] || [ ! -f "ssl/key.pem" ]; then
-    echo -e "${RED}Error: SSL certificate not found. Please run ./build.sh first.${NC}"
-    exit 1
-fi
-
-echo -e "${YELLOW}Starting AutoBuildMCP server on https://localhost:$MCP_PORT...${NC}"
-venv/bin/uvicorn server:app --host 0.0.0.0 --port "$MCP_PORT" --ssl-keyfile ssl/key.pem --ssl-certfile ssl/cert.pem
+export MCP_PORT=${MCP_PORT:-5305}
+echo -e "${YELLOW}Starting AutoBuildMCP server on http://localhost:$MCP_PORT...${NC}"
+venv/bin/uvicorn server:app --host 0.0.0.0 --port "$MCP_PORT"
