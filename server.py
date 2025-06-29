@@ -8,6 +8,9 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 import psutil
+import asyncio
+from collections import deque
+from contextlib import asynccontextmanager
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -52,12 +55,77 @@ def _handle_orphan_builds_on_startup():
         _save_state(state)
         logger.info("Finished cleaning up orphaned builds.")
 
+# --- Build Queue and Worker Configuration ---
+BUILD_QUEUE = deque()
+MAX_CONCURRENT_BUILDS = 2
 # In-memory tracking for running processes.
 # Key: profile_name, Value: subprocess.Popen object
 RUNNING_PROCESSES: Dict[str, subprocess.Popen] = {}
 
-# Create MCP server - this is the correct way.
-mcp = FastMCP("AutoBuildMCP")
+async def build_worker():
+    """The background worker that processes the build queue."""
+    logger.info("Build worker started.")
+    while True:
+        if BUILD_QUEUE and len(RUNNING_PROCESSES) < MAX_CONCURRENT_BUILDS:
+            profile_name = BUILD_QUEUE.popleft()
+            logger.info(f"Worker picking up build for profile '{profile_name}'.")
+
+            state = _load_state()
+            profile = state.get(profile_name)
+            
+            if not profile:
+                logger.error(f"Profile '{profile_name}' not found in state when worker tried to run it. Skipping.")
+                continue
+
+            # This is the same logic from the old start_build tool
+            run_id = str(uuid.uuid4())
+            log_file_path = os.path.join("logs", f"{run_id}.log")
+            try:
+                build_env = os.environ.copy()
+                if profile.get("environment"):
+                    build_env.update(profile["environment"])
+                log_file = open(log_file_path, "wb")
+                process = subprocess.Popen(
+                    profile["build_command"],
+                    shell=True,
+                    cwd=profile["project_path"],
+                    env=build_env,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT
+                )
+                RUNNING_PROCESSES[profile_name] = process
+                profile["status"] = "running"
+                profile["last_run"] = {
+                    "run_id": run_id,
+                    "pid": process.pid,
+                    "start_time": datetime.now(timezone.utc).isoformat(),
+                    "log_file": log_file_path
+                }
+                _save_state(state)
+                logger.info(f"Worker successfully started build for '{profile_name}' with PID {process.pid}.")
+            except Exception as e:
+                logger.error(f"Worker failed to start build for '{profile_name}': {e}", exc_info=True)
+                profile["status"] = "failed"
+                profile["last_run"] = {"outcome_note": f"Worker failed to start build: {e}"}
+                _save_state(state)
+        
+        await asyncio.sleep(5)  # Wait 5 seconds before checking the queue again
+
+@asynccontextmanager
+async def lifespan(app: FastMCP):
+    """Manages the startup and shutdown of the background worker task."""
+    worker_task = asyncio.create_task(build_worker())
+    yield
+    logger.info("Server shutting down, stopping build worker...")
+    worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        logger.info("Build worker successfully cancelled.")
+
+
+# Create MCP server, now with the lifespan manager for our worker
+mcp = FastMCP("AutoBuildMCP", lifespan=lifespan)
 logger.info("MCP Server 'AutoBuildMCP' initialized")
 
 @mcp.tool()
@@ -121,64 +189,31 @@ def list_builds() -> dict:
 
 @mcp.tool()
 def start_build(profile_name: str) -> dict:
-    """Starts a build for the given profile."""
-    logger.info(f"Attempting to start build for profile: {profile_name}")
+    """Adds a build request to the queue."""
+    logger.info(f"Queuing build for profile: {profile_name}")
     state = _load_state()
     
     profile = state.get(profile_name)
     if not profile:
         return {"error": f"Profile '{profile_name}' not found."}
 
-    if profile.get("status") == "running":
-        return {"error": f"Build for profile '{profile_name}' is already running."}
+    # Prevent adding to queue if already running or queued
+    if profile.get("status") in ["running", "queued"]:
+        return {"error": f"Build for profile '{profile_name}' is already running or queued."}
 
-    run_id = str(uuid.uuid4())
-    log_file_path = os.path.join("logs", f"{run_id}.log")
-    
-    try:
-        # Prepare the environment for the subprocess
-        build_env = os.environ.copy()
-        if profile.get("environment"):
-            build_env.update(profile["environment"])
+    if profile_name in BUILD_QUEUE:
+        return {"error": f"Build for profile '{profile_name}' is already in the queue."}
 
-        # Open the log file
-        log_file = open(log_file_path, "wb")
+    # Update status to 'queued' and add to the queue
+    profile["status"] = "queued"
+    _save_state(state)
+    BUILD_QUEUE.append(profile_name)
 
-        # Launch the build command as a background process
-        process = subprocess.Popen(
-            profile["build_command"],
-            shell=True,
-            cwd=profile["project_path"],
-            env=build_env,
-            stdout=log_file,
-            stderr=subprocess.STDOUT
-        )
-        
-        # Track the running process in memory
-        RUNNING_PROCESSES[profile_name] = process
-        
-        # Update the profile state
-        profile["status"] = "running"
-        profile["last_run"] = {
-            "run_id": run_id,
-            "pid": process.pid,
-            "start_time": datetime.now(timezone.utc).isoformat(),
-            "log_file": log_file_path
-        }
-        _save_state(state)
-
-        logger.info(f"Successfully started build for profile '{profile_name}' with PID {process.pid}")
-        return {
-            "message": f"Build started for profile '{profile_name}'.",
-            "run_id": run_id,
-            "pid": process.pid
-        }
-    except Exception as e:
-        logger.error(f"Failed to start build for profile '{profile_name}': {e}", exc_info=True)
-        # Clean up log file if process creation fails
-        if 'log_file' in locals() and log_file:
-            log_file.close()
-        return {"error": f"Failed to start build: {e}"}
+    logger.info(f"Successfully queued build for profile '{profile_name}'.")
+    return {
+        "message": f"Build for profile '{profile_name}' has been queued.",
+        "position": len(BUILD_QUEUE)
+    }
 
 @mcp.tool()
 def stop_build(profile_name: str) -> dict:

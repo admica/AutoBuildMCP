@@ -1,83 +1,129 @@
-# AutoBuildMCP (MCP-Compliant)
+# AutoBuildMCP: An MCP-Powered Build Automation Server
 
-The AutoBuildMCP server is a Model Context Protocol (MCP) server designed to automate and monitor code builds. It exposes a set of tools that an MCP-compliant agent can use to watch a directory for code changes, trigger builds, and monitor the status.
+AutoBuildMCP is a robust, profile-based build automation server powered by the Model Context Protocol (MCP). It allows an MCP-compliant client, such as Cursor, to manage, execute, and monitor build processes across multiple projects seamlessly.
 
-It uses a JSON-RPC 2.0 interface.
+The server is built on a persistent, stateful architecture that uses a build queue to manage concurrent operations, preventing system overloads.
 
-## Setup
+## Features
 
-1.  **Build the Environment:**
-    Run the `build.sh` script. This will create a Python virtual environment, upgrade pip, and install all necessary dependencies.
-    ```bash
-    ./build.sh
-    ```
+- **Profile-Based Management:** Define unique build "profiles" for each of your projects. Each profile encapsulates the project's path, build command, environment variables, and timeouts.
+- **Persistent State:** All build profiles are stored in a simple `builds.json` file, ensuring your configurations persist across server restarts.
+- **Build Queuing System:** A sophisticated queuing system manages a pool of concurrent builds (default: 2), preventing the server from being overloaded by multiple simultaneous requests. New builds are queued and executed as slots become available.
+- **Asynchronous, Non-Blocking Execution:** Builds run as background processes, allowing the server to remain responsive and handle other API calls while builds are in progress.
+- **Full Lifecycle Management:** A complete suite of tools to configure, start, monitor, stop, and delete builds.
+- **Log Capture:** The full `stdout` and `stderr` of every build run are captured to a dedicated log file for easy debugging.
+- **Restart Resiliency:** The server intelligently detects and marks builds as "unknown" if the server was restarted during their execution, preventing stuck "running" states.
 
-2.  **Start the Server:**
-    Use the `run.sh` script, which activates the virtual environment and starts the server on `http://localhost:5305`.
-    ```bash
-    ./run.sh
-    ```
+## Setup & Installation
 
-3.  **Run the self-tests (Optional)**
-    Use the `test.sh` script to perform self test of all endpoints. This will call build.sh on itself.
-    ```bash
-    ./test.sh
-    ```
+The setup process is streamlined for both Windows and Linux/macOS environments.
 
-## Interacting with the MCP Server
+### 1. Build the Environment
 
-All interactions happen via JSON-RPC 2.0 messages sent to the `/mcp` endpoint. You can use `curl` to interact with it manually.
+This script creates a Python virtual environment and installs all necessary dependencies from `requirements.txt`, including `psutil` for process management.
 
-### Getting Help (`get_help_info`)
-
-To retrieve information about the available methods and their usage, call the `get_help_info` method.
-
-```bash
-curl -X POST -H "Content-Type: application/json" \
--d '{"jsonrpc": "2.0", "method": "get_help_info", "params": {}, "id": 3}' \
-http://localhost:5305/mcp
+**On Windows:**
+```cmd
+.\build.bat
 ```
 
-### Configuring the Build (`configure_build`)
-
-To start watching a directory, call the `configure_build` method with the required parameters.
-
+**On Linux/macOS:**
 ```bash
-curl -X POST -H "Content-Type: application/json" \
--d '{
-  "jsonrpc": "2.0",
-  "method": "configure_build",
-  "params": {
-    "work_dir": "/home/user/mcp/AutoBuildMCP",
-    "build_command": "./build.sh",
-    "build_delay": 2.0
-  },
-  "id": 1
-}' \
-http://localhost:5305/mcp
-```
-*Note: Replace `"/home/user/mcp/AutoBuildMCP"` with the absolute path to the project you want to monitor.*
-
-### Checking Status (`get_build_status`)
-
-To check the current build status, call the `get_build_status` method.
-
-```bash
-curl -X POST -H "Content-Type: application/json" \
--d '{"jsonrpc": "2.0", "method": "get_build_status", "params": {}, "id": 2}' \
-http://localhost:5305/mcp
+./build.sh
 ```
 
-## Testing
+### 2. Run the Server
 
-To run the test suite, execute the `test.sh` script:
+This starts the AutoBuildMCP server and its background build worker. The server will be available at `http://localhost:5307`.
 
-```bash
-./test.sh
+**On Windows:**
+```cmd
+.\run.bat
 ```
-This script activates the virtual environment and runs the `test/curl.py` script, which contains automated tests for the server's endpoints.
 
-## Build History
+**On Linux/macOS:**
+```bash
+./run.sh
+```
+The server is now running and ready to accept requests from an MCP client.
 
-The server maintains a `build_history.json` file in the working directory to store the duration of successful and failed builds. This data is used to provide estimated build times.
+## API / Tool Reference
+
+The server exposes a set of tools that can be called by any MCP-compliant client.
+
+---
+
+### `configure_build`
+Creates or updates a build profile.
+
+- **`profile_name`** (str): A unique name for the profile (e.g., `my-web-app`).
+- **`project_path`** (str): The absolute or relative path to the project's root directory.
+- **`build_command`** (str): The shell command to execute for the build (e.g., `npm run build`).
+- **`environment`** (dict, optional): A dictionary of environment variables to set for the build process.
+- **`timeout`** (int, optional): A timeout for the build in seconds (not yet implemented).
+
+---
+
+### `list_builds`
+Lists all configured build profiles and their last known status.
+
+---
+
+### `get_build_status`
+Retrieves the current status of a specific build profile.
+- **`profile_name`** (str): The name of the profile to check.
+- **Returns:** The status, which can be `configured`, `queued`, `running`, `succeeded`, `failed`, `stopped`, or `unknown`.
+
+---
+
+### `start_build`
+Adds a build request for a profile to the queue.
+- **`profile_name`** (str): The name of the profile to build.
+- **Returns:** A confirmation message and the build's position in the queue.
+
+---
+
+### `stop_build`
+Stops a currently running build.
+- **`profile_name`** (str): The name of the running profile to stop.
+
+---
+
+### `delete_build_profile`
+Deletes a build profile from the server.
+- **`profile_name`** (str): The name of the profile to delete.
+
+---
+
+### `get_build_log`
+Retrieves the log file for the last run of a profile.
+- **`profile_name`** (str): The name of the profile.
+- **`lines`** (int, optional): If provided, returns only the last N lines of the log (log tailing).
+
+## The `builds.json` State File
+
+This file is the heart of the server, storing all profile configurations and their last run state. You can view it to see the current state of the system.
+
+**Example `builds.json`:**
+```json
+{
+  "my-web-app": {
+    "project_path": "C:/Users/Admin/projects/my-app",
+    "build_command": "npm install && npm run build",
+    "environment": {
+      "NODE_ENV": "production"
+    },
+    "timeout": 600,
+    "status": "succeeded",
+    "last_run": {
+      "run_id": "08f7e57e-e46c-4ac3-b564-f3588018b9fd",
+      "pid": 12052,
+      "start_time": "2025-06-29T22:45:00.123456Z",
+      "end_time": "2025-06-29T22:46:12.123456Z",
+      "log_file": "logs/08f7e57e-e46c-4ac3-b564-f3588018b9fd.log",
+      "outcome_note": "Build status is unknown; server was restarted during execution."
+    }
+  }
+}
+```
 
