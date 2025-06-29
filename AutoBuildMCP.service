@@ -3,10 +3,10 @@ Description=AutoBuildMCP Server
 After=network.target
 
 [Service]
-ExecStart=/home/user/mcp/AutoBuildMCP/run.sh
-WorkingDirectory=/home/user/mcp/AutoBuildMCP
+ExecStart=__WORKING_DIRECTORY__/run.sh
+WorkingDirectory=__WORKING_DIRECTORY__
 Restart=always
-User=user
+User=__USER__
 StandardOutput=journal
 StandardError=journal
 

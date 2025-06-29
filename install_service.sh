@@ -17,9 +17,19 @@ if [[ ! -f "$SOURCE_PATH" ]]; then
     exit 1
 fi
 
+# Get current user and working directory
+CURRENT_USER=$(whoami)
+WORKING_DIRECTORY=$(pwd)
+TEMP_SERVICE_FILE="/tmp/$SERVICE_NAME"
+
+# Replace placeholders in the service file
+echo -e "${GREEN}Configuring service file...${NC}"
+sed -e "s|__USER__|$CURRENT_USER|g" -e "s|__WORKING_DIRECTORY__|$WORKING_DIRECTORY|g" "$SOURCE_PATH" > "$TEMP_SERVICE_FILE"
+
 # Copy the service file
 echo -e "${GREEN}Copying service file to $SERVICE_PATH...${NC}"
-sudo cp "$SOURCE_PATH" "$SERVICE_PATH"
+sudo cp "$TEMP_SERVICE_FILE" "$SERVICE_PATH"
+rm "$TEMP_SERVICE_FILE"
 
 # Reload systemd daemon
 echo -e "${GREEN}Reloading systemd daemon...${NC}"

@@ -15,16 +15,6 @@ for /f "tokens=3 delims=. " %%a in ("%PYTHON_VERSION%") do (
     set MINOR=%%a
 )
 
-if %MAJOR% LSS 3 (
-    echo Error: Python version is less than 3. Please install Python 3.8 or higher.
-    exit /b 1
-)
-if %MAJOR% EQU 3 if %MINOR% LSS 8 (
-    echo Error: Python version is less than 3.8. Please install Python 3.8 or higher.
-    exit /b 1
-)
-echo Found suitable Python version: %PYTHON_VERSION%
-
 :: Remove old venv if exists
 if exist venv (
     echo Removing existing 'venv' directory...
@@ -45,7 +35,8 @@ echo Virtual environment created successfully.
 call venv\Scripts\activate.bat
 if exist requirements.txt (
     echo Installing dependencies from requirements.txt...
-    pip install --upgrade pip setuptools wheel
+    python.exe -m pip install --upgrade pip
+    pip install --upgrade setuptools wheel
     pip install -r requirements.txt
     if %ERRORLEVEL% NEQ 0 (
         echo Failed to install dependencies. Check requirements.txt for conflicts or network issues.
