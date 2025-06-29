@@ -1,5 +1,1 @@
-fastapi>=0.115.0
-pydantic>=2.0
-sse-starlette>=0.10.0
-uvicorn>=0.35.0
-watchdog>=6.0.0
+mcp[cli]==1.10.1

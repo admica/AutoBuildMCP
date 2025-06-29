@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "AutoBuildMCP": {
-      "url": "http://localhost:5305/mcp"
+      "url": "http://localhost:5307/mcp"
     }
   }
 }
