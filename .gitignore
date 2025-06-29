@@ -1,3 +1,4 @@
+.cursor
 ssl/*pem
 ssl/*key
 # Byte-compiled / optimized / DLL files

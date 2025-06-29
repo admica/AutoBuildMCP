@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "AutoBuildMCP": {
-      "url": "https://localhost:5501/mcp/sse"
+      "url": "https://localhost:5501/mcp"
     }
   }
 }

@@ -7,6 +7,8 @@ ExecStart=/home/user/mcp/AutoBuildMCP/run.sh
 WorkingDirectory=/home/user/mcp/AutoBuildMCP
 Restart=always
 User=user
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

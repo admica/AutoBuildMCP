@@ -65,32 +65,44 @@ async def mcp_sse():
 def get_help_info() -> Dict[str, Any]:
     return {
         "description": "AutoBuildMCP: A generic MCP server for build automation. Configure at runtime via API.",
-        "methods": [
+        "tools": [
             {
                 "name": "get_help_info",
-                "params": {},
-                "description": "Returns this help message and usage info."
+                "description": "Returns this help message and usage info.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
             },
             {
                 "name": "configure_build",
-                "params": {
-                    "work_dir": "Absolute path to codebase (string)",
-                    "build_command": "Build command to run (string)",
-                    "build_delay": "Seconds to wait after change before building (float)",
-                    "ignore_patterns": "List of glob patterns to ignore (list of strings)",
-                    "use_gitignore": "Whether to ignore files in .gitignore (bool)",
-                    "env": "Environment variables for build (dict)"
-                },
-                "description": "Configure the build environment and file watching."
+                "description": "Configure the build environment and file watching.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "work_dir": {"type": "string", "description": "Absolute path to codebase"},
+                        "build_command": {"type": "string", "description": "Build command to run"},
+                        "build_delay": {"type": "number", "description": "Seconds to wait after change before building"},
+                        "ignore_patterns": {"type": "array", "items": {"type": "string"}, "description": "Glob patterns to ignore"},
+                        "use_gitignore": {"type": "boolean", "description": "Whether to ignore files in .gitignore"},
+                        "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables for build"}
+                    },
+                    "required": ["work_dir", "build_command"]
+                }
             },
             {
                 "name": "get_build_status",
-                "params": {},
-                "description": "Get the current build status and log tail."
+                "description": "Get the current build status and log tail.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
             }
         ],
         "usage_steps": [
-            "1. Call get_help_info to see available methods.",
+            "1. Call get_help_info to see available tools.",
             "2. Call configure_build with your project settings.",
             "3. The server will watch for changes and run builds.",
             "4. Poll get_build_status or connect to /mcp/sse for updates."

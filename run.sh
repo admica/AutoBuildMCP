@@ -38,13 +38,4 @@ if [ ! -f "ssl/cert.pem" ] || [ ! -f "ssl/key.pem" ]; then
 fi
 
 echo -e "${YELLOW}Starting AutoBuildMCP server on https://localhost:$MCP_PORT...${NC}"
-venv/bin/uvicorn server:app --host 0.0.0.0 --port "$MCP_PORT" --ssl-keyfile ssl/key.pem --ssl-certfile ssl/cert.pem >> server.log 2>&1 &
-
-sleep 2
-
-if ! pgrep -f "uvicorn server:app" > /dev/null; then
-    echo -e "${RED}Error: Server failed to start. Check server.log for details.${NC}"
-    exit 1
-else
-    echo -e "${YELLOW}Server started successfully. Logs are in server.log.${NC}"
-fi
+venv/bin/uvicorn server:app --host 0.0.0.0 --port "$MCP_PORT" --ssl-keyfile ssl/key.pem --ssl-certfile ssl/cert.pem
