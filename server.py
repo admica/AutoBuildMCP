@@ -1,6 +1,7 @@
 from mcp.server.fastmcp import FastMCP
 import logging
 import socket
+import uvicorn
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,7 +48,7 @@ def get_local_ip():
         return '127.0.0.1'  # Fallback to localhost
 
 if __name__ == "__main__":
-    logger.info("Starting AutoBuildMCP server on port 5307")
-    # Run with HTTP transport to test Cursor compatibility
-    mcp.run(transport="streamable-http", host="127.0.0.1", port=5307, path="/mcp")
+    port = 5335
+    logger.info(f"Starting AutoBuildMCP server on port {PORT}")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
     logger.info("AutoBuildMCP server stopped")
