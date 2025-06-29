@@ -5,7 +5,7 @@ import os
 import shlex
 
 # Configuration
-SERVER_URL = "http://localhost:5501/mcp"
+SERVER_URL = "https://localhost:5501/mcp"
 TEST_DIR = os.path.abspath("./")  # Ensure absolute path for work_dir
 BUILD_COMMAND = "./build.sh"
 
