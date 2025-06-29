@@ -32,6 +32,26 @@ def _save_state(state: dict) -> None:
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
 
+def _handle_orphan_builds_on_startup():
+    """Checks for and cleans up builds that were running when the server last stopped."""
+    logger.info("Checking for orphaned builds from previous sessions...")
+    state = _load_state()
+    state_changed = False
+
+    for profile_name, profile in state.items():
+        if profile.get("status") == "running":
+            pid = profile.get("last_run", {}).get("pid")
+            if not pid or not psutil.pid_exists(pid):
+                logger.warning(f"Orphaned build '{profile_name}' (PID: {pid}) detected. Marking status as 'unknown'.")
+                profile["status"] = "unknown"
+                profile["last_run"]["end_time"] = datetime.now(timezone.utc).isoformat()
+                profile["last_run"]["outcome_note"] = "Build status is unknown; server was restarted during execution."
+                state_changed = True
+    
+    if state_changed:
+        _save_state(state)
+        logger.info("Finished cleaning up orphaned builds.")
+
 # In-memory tracking for running processes.
 # Key: profile_name, Value: subprocess.Popen object
 RUNNING_PROCESSES: Dict[str, subprocess.Popen] = {}
@@ -216,8 +236,8 @@ def stop_build(profile_name: str) -> dict:
         return {"error": f"Failed to stop build: {e}"}
 
 @mcp.tool()
-def get_build_log(profile_name: str) -> dict:
-    """Retrieves the log file for the last run of a given profile."""
+def get_build_log(profile_name: str, lines: int = None) -> dict:
+    """Retrieves the log file for the last run of a given profile. Can tail the last N lines."""
     logger.info(f"Attempting to retrieve log for profile: {profile_name}")
     state = _load_state()
     profile = state.get(profile_name)
@@ -235,14 +255,38 @@ def get_build_log(profile_name: str) -> dict:
 
     try:
         with open(log_file_path, "r", encoding="utf-8") as f:
-            log_contents = f.read()
+            if lines and lines > 0:
+                log_lines = f.readlines()
+                log_contents = "".join(log_lines[-lines:])
+            else:
+                log_contents = f.read()
         return {"profile": profile_name, "run_id": last_run.get("run_id"), "log": log_contents}
     except Exception as e:
         logger.error(f"Failed to read log file for profile '{profile_name}': {e}", exc_info=True)
         return {"error": f"Failed to read log file: {e}"}
 
+@mcp.tool()
+def delete_build_profile(profile_name: str) -> dict:
+    """Deletes a configured build profile."""
+    logger.info(f"Attempting to delete build profile: {profile_name}")
+    state = _load_state()
+
+    if profile_name not in state:
+        return {"error": f"Profile '{profile_name}' not found."}
+
+    if state[profile_name].get("status") == "running":
+        return {"error": f"Cannot delete profile '{profile_name}' while a build is running."}
+
+    del state[profile_name]
+    _save_state(state)
+    
+    logger.info(f"Successfully deleted profile '{profile_name}'.")
+    return {"message": f"Profile '{profile_name}' has been deleted."}
+
 if __name__ == "__main__":
     port = 5307
+    # Handle potentially orphaned builds before starting the server
+    _handle_orphan_builds_on_startup()
     # This is the correct way to get the ASGI app, based on the source code.
     app = mcp.streamable_http_app()
     logger.info(f"Starting AutoBuildMCP server on port {port}")
