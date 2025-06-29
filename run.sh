@@ -31,12 +31,18 @@ fi
 
 export MCP_PORT=${MCP_PORT:-5501}
 
-echo -e "${YELLOW}Starting AutoBuildMCP server on port $MCP_PORT...${NC}"
-venv/bin/python server.py >> server.log 2>&1 &
+# Check for SSL certificates before starting
+if [ ! -f "ssl/cert.pem" ] || [ ! -f "ssl/key.pem" ]; then
+    echo -e "${RED}Error: SSL certificate not found. Please run ./build.sh first.${NC}"
+    exit 1
+fi
+
+echo -e "${YELLOW}Starting AutoBuildMCP server on https://localhost:$MCP_PORT...${NC}"
+venv/bin/uvicorn server:app --host 0.0.0.0 --port "$MCP_PORT" --ssl-keyfile ssl/key.pem --ssl-certfile ssl/cert.pem >> server.log 2>&1 &
 
 sleep 2
 
-if ! pgrep -f "python server.py" > /dev/null; then
+if ! pgrep -f "uvicorn server:app" > /dev/null; then
     echo -e "${RED}Error: Server failed to start. Check server.log for details.${NC}"
     exit 1
 else

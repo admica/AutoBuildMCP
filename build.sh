@@ -73,6 +73,19 @@ echo -e "${CYAN}Activating virtual environment...${NC}"
 # shellcheck disable=SC1091
 source venv/bin/activate
 
+# Generate self-signed cert
+echo -e "${CYAN}Generating self-signed SSL certificate...${NC}"
+if ! command -v openssl &> /dev/null; then
+    echo -e "${RED}Error: openssl command not found. Please install OpenSSL.${NC}" >&2
+    exit 40
+fi
+mkdir -p ssl
+openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout ssl/key.pem -out ssl/cert.pem \
+    -days 3650 \
+    -subj "/C=US/ST=California/L=SanFrancisco/O=AutoBuildMCP/CN=localhost"
+echo -e "${GREEN}SSL certificate created successfully.${NC}"
+
 # Upgrade pip/setuptools/wheel
 echo -e "${CYAN}Upgrading pip, setuptools, and wheel...${NC}"
 pip install --upgrade pip setuptools wheel

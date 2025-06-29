@@ -1,134 +1,121 @@
-import subprocess
-import json
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import StreamingResponse, JSONResponse
+from pydantic import BaseModel
+from typing import Any, Dict, List, Optional
+import asyncio
 import time
-import os
-import shlex
 
-# Configuration
-SERVER_URL = "https://localhost:5501/mcp"
-TEST_DIR = os.path.abspath("./")  # Ensure absolute path for work_dir
-BUILD_COMMAND = "./build.sh"
+app = FastAPI(title="AutoBuildMCP")
 
-def run_curl_command(curl_cmd):
-    """Execute a curl command and return the parsed JSON response."""
-    try:
-        result = subprocess.run(curl_cmd, shell=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"Error running curl: {result.stderr}")
-            return None
-        return json.loads(result.stdout)
-    except json.JSONDecodeError:
-        print(f"Failed to parse response: {result.stdout}")
-        return None
+# --- In-memory state (to be replaced with real logic) ---
+config = {
+    "work_dir": None,
+    "build_command": None,
+    "build_delay": 2.0,
+    "ignore_patterns": [],
+    "use_gitignore": False,
+    "env": {},
+}
+build_status = {
+    "status": "idle",
+    "last_build_time": None,
+    "last_build_result": None,
+    "current_log_tail": "",
+    "history": [],
+}
 
-def post_rpc(method, params, id_):
-    """Helper to post JSON-RPC requests to the MCP server."""
-    json_payload = json.dumps({
-        "jsonrpc": "2.0",
-        "method": method,
-        "params": params,
-        "id": id_
-    })
-    cmd = (
-        f'curl -s -X POST -H "Content-Type: application/json" -d {shlex.quote(json_payload)} {SERVER_URL}'
-    )
-    return run_curl_command(cmd)
+# --- JSON-RPC 2.0 Handler ---
 
-def test_configure_build():
-    print("Testing configure_build...")
-    params = {
-        "work_dir": TEST_DIR,
-        "build_command": BUILD_COMMAND,
-        "build_delay": 2.0
+@app.post("/mcp")
+async def mcp_endpoint(request: Request):
+    data = await request.json()
+    method = data.get("method")
+    params = data.get("params", {})
+    rpc_id = data.get("id")
+    
+    if method == "get_help_info":
+        result = get_help_info()
+        return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
+    elif method == "configure_build":
+        result = configure_build(params)
+        return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
+    elif method == "get_build_status":
+        result = get_build_status()
+        return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
+    else:
+        return {
+            "jsonrpc": "2.0",
+            "error": {"code": -32601, "message": f"Method '{method}' not found."},
+            "id": rpc_id,
+        }
+
+# --- Streaming Endpoint (SSE) ---
+
+@app.get("/mcp/sse")
+async def mcp_sse():
+    async def event_generator():
+        # TODO: Replace with real log/status streaming
+        for i in range(5):
+            yield f"data: status=idle, tick={i}\n\n"
+            await asyncio.sleep(1)
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# --- JSON-RPC Method Implementations ---
+
+def get_help_info() -> Dict[str, Any]:
+    return {
+        "description": "AutoBuildMCP: A generic MCP server for build automation. Configure at runtime via API.",
+        "methods": [
+            {
+                "name": "get_help_info",
+                "params": {},
+                "description": "Returns this help message and usage info."
+            },
+            {
+                "name": "configure_build",
+                "params": {
+                    "work_dir": "Absolute path to codebase (string)",
+                    "build_command": "Build command to run (string)",
+                    "build_delay": "Seconds to wait after change before building (float)",
+                    "ignore_patterns": "List of glob patterns to ignore (list of strings)",
+                    "use_gitignore": "Whether to ignore files in .gitignore (bool)",
+                    "env": "Environment variables for build (dict)"
+                },
+                "description": "Configure the build environment and file watching."
+            },
+            {
+                "name": "get_build_status",
+                "params": {},
+                "description": "Get the current build status and log tail."
+            }
+        ],
+        "usage_steps": [
+            "1. Call get_help_info to see available methods.",
+            "2. Call configure_build with your project settings.",
+            "3. The server will watch for changes and run builds.",
+            "4. Poll get_build_status or connect to /mcp/sse for updates."
+        ]
     }
-    response = post_rpc("configure_build", params, 1)
-    if response and "result" in response and response["result"] == "Configuration set, file watching started":
-        print("configure_build: SUCCESS")
-    else:
-        print(f"configure_build: FAILED, response: {response}")
 
-def test_get_build_status_idle():
-    print("Testing get_build_status (should be idle)...")
-    response = post_rpc("get_build_status", {}, 2)
-    if response and "result" in response and response["result"]["status"] == "idle":
-        print("get_build_status (idle): SUCCESS")
-    else:
-        print(f"get_build_status (idle): FAILED, response: {response}")
+def configure_build(params: Dict[str, Any]) -> Dict[str, Any]:
+    # Update in-memory config (no validation for now)
+    config.update({
+        "work_dir": params.get("work_dir"),
+        "build_command": params.get("build_command"),
+        "build_delay": params.get("build_delay", 2.0),
+        "ignore_patterns": params.get("ignore_patterns", []),
+        "use_gitignore": params.get("use_gitignore", False),
+        "env": params.get("env", {}),
+    })
+    # TODO: Start/Restart file watching and build logic
+    return {"result": "Configuration set. (Build watching not yet implemented)", "config": config}
 
-def test_get_build_status_building_and_completed():
-    print("Testing get_build_status during build process...")
+def get_build_status() -> Dict[str, Any]:
+    # Return current in-memory build status
+    return build_status
 
-    # Simulate a file change to trigger build
-    dummy_file = os.path.join(TEST_DIR, "test_dummy_file.txt")
-    with open(dummy_file, "w") as f:
-        f.write("Trigger build test.")
-
-    # Wait slightly more than build_delay for build to start
-    time.sleep(2.5)
-    response = post_rpc("get_build_status", {}, 3)
-    if response and "result" in response and response["result"]["status"] == "building":
-        print("get_build_status (building): SUCCESS")
-    else:
-        print(f"get_build_status (building): FAILED, response: {response}")
-
-    # Wait up to 15 seconds for build to complete
-    wait_time = 0
-    status = None
-    while wait_time < 15:
-        response = post_rpc("get_build_status", {}, 4)
-        if response and "result" in response:
-            status = response["result"]["status"]
-            if status in ["success", "failed"]:
-                print(f"get_build_status (completed): SUCCESS, status: {status}")
-                break
-        time.sleep(1)
-        wait_time += 1
-    else:
-        print(f"get_build_status (completed): FAILED or timeout, last status: {status}")
-
-    # Clean up dummy file
-    if os.path.exists(dummy_file):
-        os.remove(dummy_file)
-
-def test_get_help_info():
-    print("Testing get_help_info...")
-    response = post_rpc("get_help_info", {}, 5)
-    if response and response.get("result") and "description" in response["result"]:
-        print("get_help_info: SUCCESS")
-    else:
-        print(f"get_help_info: FAILED, response: {response}")
-
-def test_invalid_request():
-    print("Testing invalid JSON-RPC request (missing method)...")
-    # Missing "method" key
-    json_payload = '{"jsonrpc": "2.0", "params": {}, "id": 6}'
-    cmd = f'curl -s -X POST -H "Content-Type: application/json" -d {shlex.quote(json_payload)} {SERVER_URL}'
-    response = run_curl_command(cmd)
-    if response and "error" in response and response["error"]["code"] == -32600:
-        print("invalid_request: SUCCESS")
-    else:
-        print(f"invalid_request: FAILED, response: {response}")
-
-def test_unknown_method():
-    print("Testing unknown method...")
-    response = post_rpc("nonexistent_method", {}, 7)
-    if response and "error" in response and response["error"]["code"] == -32601:
-        print("unknown_method: SUCCESS")
-    else:
-        print(f"unknown_method: FAILED, response: {response}")
+# TODO: Add file watching, build execution, log streaming, etc.
 
 if __name__ == "__main__":
-    print("Starting AutoBuildMCP tests...")
-
-    if not os.path.isdir(TEST_DIR):
-        print(f"ERROR: Test directory {TEST_DIR} does not exist. Please update TEST_DIR.")
-        exit(1)
-
-    test_configure_build()
-    test_get_build_status_idle()
-    test_get_build_status_building_and_completed()
-    test_get_help_info()
-    test_invalid_request()
-    test_unknown_method()
-
-    print("Tests completed.")
+    import uvicorn
+    uvicorn.run("server:app", host="0.0.0.0", port=5501, ssl_keyfile="ssl/key.pem", ssl_certfile="ssl/cert.pem") 
