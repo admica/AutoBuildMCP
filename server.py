@@ -13,6 +13,8 @@ from collections import deque
 from contextlib import asynccontextmanager
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+import pathspec
+from pathlib import Path
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -66,20 +68,41 @@ RUNNING_PROCESSES: Dict[str, subprocess.Popen] = {}
 
 # --- Autobuild Watcher and Debounce Logic ---
 class DebounceHandler(FileSystemEventHandler):
-    """A watchdog event handler that debounces events to trigger a build."""
-    def __init__(self, profile_name: str, debounce_seconds: int = 5):
+    """A watchdog event handler that debounces events to trigger a build, respecting ignore patterns."""
+    def __init__(self, profile_name: str, project_path: str, ignore_patterns: list[str], debounce_seconds: int = 5):
         self.profile_name = profile_name
         self.debounce_seconds = debounce_seconds
         self._loop = asyncio.get_running_loop()
         self._timer = None
-        logger.info(f"Debounce handler initialized for '{self.profile_name}' with a {self.debounce_seconds}s delay.")
+        # Use pathlib for robust path operations
+        self._project_path = Path(project_path).resolve()
+        # Compile the ignore patterns for efficient matching.
+        self._spec = pathspec.PathSpec.from_lines('gitwildmatch', ignore_patterns)
+        logger.info(f"Debounce handler initialized for '{self.profile_name}' with patterns: {ignore_patterns}.")
 
     def on_any_event(self, event):
         """Called by watchdog on any file system event."""
         if event.is_directory:
-            return  # Ignore directory events
+            return
+
+        try:
+            event_path = Path(event.src_path).resolve()
+            # This is the key: check if the event path is truly inside the project path.
+            if not event_path.is_relative_to(self._project_path):
+                return
+            
+            # Get the relative path for matching.
+            relative_path = event_path.relative_to(self._project_path)
+            
+            # Convert to a cross-platform (forward-slash) string for pathspec
+            match_path = str(relative_path.as_posix())
+
+            if self._spec.match_file(match_path):
+                return # Path is ignored, do nothing.
+        except Exception:
+            # Broad exception to catch any potential path errors and prevent crashing the watcher.
+            return
         
-        # This is called from a background thread, so we must safely interact with the asyncio loop.
         self._loop.call_soon_threadsafe(self._reset_timer)
 
     def _reset_timer(self):
@@ -135,7 +158,8 @@ async def watcher_manager():
                 continue
             
             logger.info(f"Starting watcher for profile '{profile_name}' at path '{path}'.")
-            event_handler = DebounceHandler(profile_name)
+            ignore_patterns = profile.get("autobuild_ignore_patterns", [])
+            event_handler = DebounceHandler(profile_name, path, ignore_patterns)
             observer = Observer()
             observer.schedule(event_handler, path, recursive=True)
             observer.start()
@@ -168,7 +192,6 @@ async def build_worker():
             # Reset rebuild flag at the start of a run
             profile["rebuild_on_completion"] = False
 
-            # This is the same logic from the old start_build tool
             run_id = str(uuid.uuid4())
             log_file_path = os.path.join("logs", f"{run_id}.log")
             try:
@@ -184,6 +207,8 @@ async def build_worker():
                     stdout=log_file,
                     stderr=subprocess.STDOUT
                 )
+                
+                # The worker's job is now just to start the process and update the state.
                 RUNNING_PROCESSES[profile_name] = process
                 profile["status"] = "running"
                 profile["last_run"] = {
@@ -195,36 +220,8 @@ async def build_worker():
                 _save_state(state)
                 logger.info(f"Worker successfully started build for '{profile_name}' with PID {process.pid}.")
 
-                # --- NEW: Post-build logic ---
-                # Wait for the process to finish and get the exit code
-                return_code = process.wait()
-                
-                # Reload the state to get the most recent version
-                current_state = _load_state()
-                current_profile = current_state.get(profile_name, {})
-
-                if return_code == 0:
-                    current_profile["status"] = "succeeded"
-                else:
-                    current_profile["status"] = "failed"
-                
-                current_profile["last_run"]["end_time"] = datetime.now(timezone.utc).isoformat()
-                logger.info(f"Build '{profile_name}' finished with exit code {return_code}. Status: {current_profile['status']}.")
-
-                # Check if a rebuild was requested while it was running
-                if current_profile.get("rebuild_on_completion"):
-                    logger.info(f"Rebuild requested for '{profile_name}'. Adding back to queue.")
-                    current_profile["status"] = "queued"
-                    current_profile["rebuild_on_completion"] = False
-                    BUILD_QUEUE.append(profile_name)
-                
-                # Save the final state and clean up
-                _save_state(current_state)
-                RUNNING_PROCESSES.pop(profile_name, None)
-
             except Exception as e:
                 logger.error(f"Worker failed to execute build for '{profile_name}': {e}", exc_info=True)
-                # Ensure state is updated on failure
                 fail_state = _load_state()
                 fail_profile = fail_state.get(profile_name, {})
                 fail_profile["status"] = "failed"
@@ -232,7 +229,53 @@ async def build_worker():
                 _save_state(fail_state)
                 RUNNING_PROCESSES.pop(profile_name, None)
         
-        await asyncio.sleep(5)  # Wait 5 seconds before checking the queue again
+        await asyncio.sleep(1) # Check queue more frequently
+
+async def status_monitor():
+    """The background worker that monitors running processes and handles completion."""
+    logger.info("Status monitor started.")
+    while True:
+        # Iterate over a copy of the items, as the dictionary may be modified during the loop.
+        for profile_name, process in list(RUNNING_PROCESSES.items()):
+            return_code = process.poll()
+            
+            # If poll() returns None, the process is still running.
+            if return_code is None:
+                continue
+
+            logger.info(f"Status monitor detected build '{profile_name}' finished with exit code {return_code}.")
+            
+            # Process finished, remove it from active tracking.
+            RUNNING_PROCESSES.pop(profile_name, None)
+            
+            # Reload the state to get the most recent version before modifying it.
+            current_state = _load_state()
+            current_profile = current_state.get(profile_name)
+
+            if not current_profile:
+                logger.error(f"Profile '{profile_name}' was not found in state when its process finished. Cannot update status.")
+                continue
+
+            if return_code == 0:
+                current_profile["status"] = "succeeded"
+            else:
+                current_profile["status"] = "failed"
+            
+            if "last_run" in current_profile:
+                 current_profile["last_run"]["end_time"] = datetime.now(timezone.utc).isoformat()
+
+            # Check if a rebuild was requested while it was running
+            if current_profile.get("rebuild_on_completion"):
+                logger.info(f"Rebuild requested for '{profile_name}'. Adding back to queue.")
+                current_profile["status"] = "queued"
+                current_profile["rebuild_on_completion"] = False
+                BUILD_QUEUE.append(profile_name)
+            
+            _save_state(current_state)
+            logger.info(f"Status for '{profile_name}' updated to '{current_profile['status']}'.")
+
+        await asyncio.sleep(2) # Check every 2 seconds
+
 
 @asynccontextmanager
 async def lifespan(app: FastMCP):
@@ -240,11 +283,17 @@ async def lifespan(app: FastMCP):
     # Start all background tasks
     build_worker_task = asyncio.create_task(build_worker())
     watcher_manager_task = asyncio.create_task(watcher_manager())
+    status_monitor_task = asyncio.create_task(status_monitor())
     yield
     # Stop all background tasks
     logger.info("Server shutting down, stopping background tasks...")
+    status_monitor_task.cancel()
     watcher_manager_task.cancel()
     build_worker_task.cancel()
+    try:
+        await status_monitor_task
+    except asyncio.CancelledError:
+        logger.info("Status monitor successfully cancelled.")
     try:
         await watcher_manager_task
     except asyncio.CancelledError:
@@ -265,10 +314,56 @@ mcp = FastMCP("AutoBuildMCP", lifespan=lifespan)
 logger.info("MCP Server 'AutoBuildMCP' initialized")
 
 @mcp.tool()
-def configure_build(profile_name: str, project_path: str, build_command: str, environment: dict = None, timeout: int = 300) -> dict:
+def get_server_info() -> dict:
+    """Returns a comprehensive overview of the server's capabilities, best practices, and API."""
+    return {
+        "server_name": "AutoBuildMCP",
+        "version": "1.0.0",
+        "description": "A profile-based build automation server that can start, stop, monitor, and automatically trigger builds based on file system changes.",
+        "best_practices": {
+            "workflow_overview": "1. Use `configure_build` to create a profile for your project. 2. Use `toggle_autobuild` to enable file watching. 3. Let the server handle the rest, or use `start_build` for manual runs.",
+            "understanding_build_lifecycle": "Builds are asynchronous. A triggered build first goes into a 'queued' state. A background worker will then pick it up, changing the status to 'running'. Once complete, the status will become 'succeeded' or 'failed'. Always anticipate this slight delay.",
+            "preventing_recursion_user_responsibility": "CRITICAL: Your build process likely creates files (logs, build artifacts). To prevent infinite build loops, you MUST use the `autobuild_ignore_patterns` parameter in `configure_build` to exclude these paths. Good examples: `['build/', 'dist/', '*.pyc', 'node_modules/']`.",
+            "preventing_recursion_server_protection": f"NOTE: The server automatically ignores its own state file ('{STATE_FILE}') and common patterns like '.git/' and 'logs/' for you. You do not need to add these to your ignore patterns.",
+            "checking_status": "Because builds are asynchronous, polling `get_build_status` is the best way to get real-time status of a build you have just triggered."
+        },
+        "api_reference": {
+            "get_server_info": "Returns this help object.",
+            "configure_build": {
+                "description": "Creates or updates a build profile. This is the primary tool for managing builds.",
+                "example": {
+                    "tool_call": "configure_build",
+                    "profile_name": "my-web-app",
+                    "project_path": "./frontend",
+                    "build_command": "npm run build",
+                    "autobuild_ignore_patterns": ["dist/", "node_modules/"]
+                }
+            },
+            "toggle_autobuild": "Enables (`enabled: true`) or disables (`enabled: false`) the autobuild watcher for a profile.",
+            "start_build": "Manually adds a build to the queue. Returns the queue position.",
+            "list_builds": "Lists all profiles and their current status. This is a snapshot-in-time.",
+            "get_build_status": "Gets the status of a single profile. Expect the status to be 'queued' or 'running' before it becomes 'succeeded' or 'failed'.",
+            "stop_build": "Stops a currently running build.",
+            "delete_build_profile": "Deletes a profile.",
+            "get_build_log": "Retrieves the full log or tails the last N lines using the `lines` parameter. Useful for debugging failed builds."
+        }
+    }
+
+@mcp.tool()
+def configure_build(profile_name: str, project_path: str, build_command: str, environment: dict = None, timeout: int = 300, autobuild_ignore_patterns: list[str] = None) -> dict:
     """Configure a build profile."""
     logger.info(f"Configuring build profile '{profile_name}'")
     state = _load_state()
+
+    # Set default ignore patterns if none are provided.
+    if autobuild_ignore_patterns is None:
+        autobuild_ignore_patterns = []
+
+    # Add default and essential patterns, ensuring no duplicates.
+    # The state file MUST be ignored to prevent recursion.
+    default_patterns = {".git/", "logs/", STATE_FILE}
+    final_ignore_patterns = list(set(autobuild_ignore_patterns) | default_patterns)
+
     state[profile_name] = {
         "project_path": project_path,
         "build_command": build_command,
@@ -276,7 +371,8 @@ def configure_build(profile_name: str, project_path: str, build_command: str, en
         "timeout": timeout,
         "status": "configured",
         "autobuild_enabled": False,
-        "rebuild_on_completion": False
+        "rebuild_on_completion": False,
+        "autobuild_ignore_patterns": final_ignore_patterns
     }
     _save_state(state)
     return {"message": f"Build profile '{profile_name}' configured successfully."}

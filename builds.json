@@ -1,9 +1,0 @@
-{
-  "AutoBuildMCP": {
-    "project_path": "./",
-    "build_command": "echo \"Building...\"",
-    "environment": null,
-    "timeout": 300,
-    "status": "configured"
-  }
-}
