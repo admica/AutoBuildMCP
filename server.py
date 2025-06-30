@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 # State management configuration
 STATE_FILE = "builds.json"
+LOG_DIR = "logs"
+MAX_LOG_FILES = 50
 
 def _load_state() -> dict:
     """Loads the build profiles from the state file."""
@@ -38,6 +40,33 @@ def _save_state(state: dict) -> None:
     """Saves the build profiles to the state file."""
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
+
+def _rotate_logs():
+    """Keeps the number of log files under a defined limit, deleting the oldest first."""
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+
+        # List only actual log files, ignoring other files that might be in the directory.
+        log_files = [f for f in os.listdir(LOG_DIR) if f.endswith(".log")]
+
+        if len(log_files) >= MAX_LOG_FILES:
+            logger.info(f"Log limit of {MAX_LOG_FILES} reached. Rotating old logs.")
+            # Get full paths to sort by modification time.
+            full_paths = [os.path.join(LOG_DIR, f) for f in log_files]
+            full_paths.sort(key=os.path.getmtime)
+            
+            # Calculate how many logs to delete.
+            num_to_delete = len(full_paths) - MAX_LOG_FILES + 1
+            files_to_delete = full_paths[:num_to_delete]
+            
+            for f_path in files_to_delete:
+                os.remove(f_path)
+            
+            logger.info(f"Successfully deleted {len(files_to_delete)} old log file(s).")
+            
+    except Exception as e:
+        # If logging fails for any reason, we should not crash the build worker.
+        logger.error(f"An error occurred during log rotation: {e}", exc_info=True)
 
 def _handle_orphan_builds_on_startup():
     """Checks for and cleans up builds that were running when the server last stopped."""
@@ -193,8 +222,11 @@ async def build_worker():
             profile["rebuild_on_completion"] = False
 
             run_id = str(uuid.uuid4())
-            log_file_path = os.path.join("logs", f"{run_id}.log")
+            log_file_path = os.path.join(LOG_DIR, f"{run_id}.log")
             try:
+                # --- NEW: Rotate logs before creating a new one ---
+                _rotate_logs()
+                
                 build_env = os.environ.copy()
                 if profile.get("environment"):
                     build_env.update(profile["environment"])
