@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # State management configuration
 STATE_FILE = "builds.json"
 LOG_DIR = "logs"
-MAX_LOG_FILES = 50
+MAX_LOG_FILES = 42
 
 def _load_state() -> dict:
     """Loads the build profiles from the state file."""
