@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="logo.png" alt="AutoBuildMCP Logo" width="200"/>
+</div>
+
 # AutoBuildMCP: An MCP-Powered Build Automation Server
 
 AutoBuildMCP is a robust, profile-based build automation server powered by the Model Context Protocol (MCP). It allows an MCP-compliant client, such as Cursor, to manage, execute, and monitor build processes across multiple projects seamlessly.
@@ -64,6 +68,13 @@ Creates or updates a build profile.
 
 ---
 
+### `toggle_autobuild`
+Enables or disables the autobuild file watcher for a profile.
+- **`profile_name`** (str): The name of the profile to modify.
+- **`enabled`** (bool): Set to `true` to enable autobuild, or `false` to disable it.
+
+---
+
 ### `list_builds`
 Lists all configured build profiles and their last known status.
 
@@ -100,6 +111,18 @@ Retrieves the log file for the last run of a profile.
 - **`profile_name`** (str): The name of the profile.
 - **`lines`** (int, optional): If provided, returns only the last N lines of the log (log tailing).
 
+## The Autobuild System
+
+The server includes a powerful autobuild system that can be enabled on a per-profile basis.
+
+### How It Works
+1.  **Enable:** Use the `toggle_autobuild` tool to enable the feature for a specific profile.
+2.  **Watch:** The server will begin monitoring the profile's `project_path` for any file changes.
+3.  **Debounce:** When a change is detected, a 5-second countdown timer starts. If another change occurs, the timer resets. This prevents a storm of builds while saving multiple files.
+4.  **Trigger:** Once the timer completes, the server checks the profile's status:
+    - If the profile is **idle**, a new build is added to the queue.
+    - If the profile is **busy** (`running` or `queued`), it sets a `rebuild_on_completion` flag. The build worker will automatically re-queue the build as soon as the current one finishes.
+
 ## The `builds.json` State File
 
 This file is the heart of the server, storing all profile configurations and their last run state. You can view it to see the current state of the system.
@@ -115,6 +138,8 @@ This file is the heart of the server, storing all profile configurations and the
     },
     "timeout": 600,
     "status": "succeeded",
+    "autobuild_enabled": true,
+    "rebuild_on_completion": false,
     "last_run": {
       "run_id": "08f7e57e-e46c-4ac3-b564-f3588018b9fd",
       "pid": 12052,

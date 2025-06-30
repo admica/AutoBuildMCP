@@ -11,6 +11,8 @@ import psutil
 import asyncio
 from collections import deque
 from contextlib import asynccontextmanager
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -62,6 +64,92 @@ MAX_CONCURRENT_BUILDS = 2
 # Key: profile_name, Value: subprocess.Popen object
 RUNNING_PROCESSES: Dict[str, subprocess.Popen] = {}
 
+# --- Autobuild Watcher and Debounce Logic ---
+class DebounceHandler(FileSystemEventHandler):
+    """A watchdog event handler that debounces events to trigger a build."""
+    def __init__(self, profile_name: str, debounce_seconds: int = 5):
+        self.profile_name = profile_name
+        self.debounce_seconds = debounce_seconds
+        self._loop = asyncio.get_running_loop()
+        self._timer = None
+        logger.info(f"Debounce handler initialized for '{self.profile_name}' with a {self.debounce_seconds}s delay.")
+
+    def on_any_event(self, event):
+        """Called by watchdog on any file system event."""
+        if event.is_directory:
+            return  # Ignore directory events
+        
+        # This is called from a background thread, so we must safely interact with the asyncio loop.
+        self._loop.call_soon_threadsafe(self._reset_timer)
+
+    def _reset_timer(self):
+        """Resets the build trigger timer. Runs in the main asyncio thread."""
+        if self._timer:
+            self._timer.cancel()
+        
+        self._timer = self._loop.call_later(
+            self.debounce_seconds,
+            lambda: asyncio.create_task(self._trigger_build())
+        )
+
+    async def _trigger_build(self):
+        """The callback that fires after the debounce delay."""
+        logger.info(f"Debounced trigger for '{self.profile_name}'. Checking status...")
+        state = _load_state()
+        profile = state.get(self.profile_name)
+
+        if not profile or not profile.get("autobuild_enabled"):
+            logger.warning(f"Autobuild trigger for '{self.profile_name}' fired, but autobuild is now disabled. Ignoring.")
+            return
+
+        status = profile.get("status")
+        if status in ["running", "queued"]:
+            logger.info(f"Build for '{self.profile_name}' is busy. Setting 'rebuild_on_completion' flag.")
+            profile["rebuild_on_completion"] = True
+            _save_state(state)
+        else:
+            logger.info(f"Build for '{self.profile_name}' is idle. Adding to build queue.")
+            # This logic is duplicated from the start_build tool, but is necessary here.
+            profile["status"] = "queued"
+            profile["rebuild_on_completion"] = False # Reset flag
+            _save_state(state)
+            BUILD_QUEUE.append(self.profile_name)
+
+
+# --- Background Worker Tasks ---
+ACTIVE_WATCHERS: Dict[str, Observer] = {}
+async def watcher_manager():
+    """Manages the file system watchers, keeping them in sync with profile configs."""
+    logger.info("Watcher manager started.")
+    while True:
+        state = _load_state()
+        profiles_to_watch = {name for name, profile in state.items() if profile.get("autobuild_enabled")}
+        watched_profiles = set(ACTIVE_WATCHERS.keys())
+        
+        # Start new watchers
+        for profile_name in profiles_to_watch - watched_profiles:
+            profile = state[profile_name]
+            path = profile.get("project_path")
+            if not path or not os.path.isdir(path):
+                logger.error(f"Cannot start watcher for '{profile_name}': project_path '{path}' is invalid.")
+                continue
+            
+            logger.info(f"Starting watcher for profile '{profile_name}' at path '{path}'.")
+            event_handler = DebounceHandler(profile_name)
+            observer = Observer()
+            observer.schedule(event_handler, path, recursive=True)
+            observer.start()
+            ACTIVE_WATCHERS[profile_name] = observer
+
+        # Stop old watchers
+        for profile_name in watched_profiles - profiles_to_watch:
+            logger.info(f"Stopping watcher for profile '{profile_name}'.")
+            observer = ACTIVE_WATCHERS.pop(profile_name)
+            observer.stop()
+            observer.join() # Wait for the thread to finish
+
+        await asyncio.sleep(10) # Re-check configurations every 10 seconds
+
 async def build_worker():
     """The background worker that processes the build queue."""
     logger.info("Build worker started.")
@@ -76,6 +164,9 @@ async def build_worker():
             if not profile:
                 logger.error(f"Profile '{profile_name}' not found in state when worker tried to run it. Skipping.")
                 continue
+            
+            # Reset rebuild flag at the start of a run
+            profile["rebuild_on_completion"] = False
 
             # This is the same logic from the old start_build tool
             run_id = str(uuid.uuid4())
@@ -103,25 +194,70 @@ async def build_worker():
                 }
                 _save_state(state)
                 logger.info(f"Worker successfully started build for '{profile_name}' with PID {process.pid}.")
+
+                # --- NEW: Post-build logic ---
+                # Wait for the process to finish and get the exit code
+                return_code = process.wait()
+                
+                # Reload the state to get the most recent version
+                current_state = _load_state()
+                current_profile = current_state.get(profile_name, {})
+
+                if return_code == 0:
+                    current_profile["status"] = "succeeded"
+                else:
+                    current_profile["status"] = "failed"
+                
+                current_profile["last_run"]["end_time"] = datetime.now(timezone.utc).isoformat()
+                logger.info(f"Build '{profile_name}' finished with exit code {return_code}. Status: {current_profile['status']}.")
+
+                # Check if a rebuild was requested while it was running
+                if current_profile.get("rebuild_on_completion"):
+                    logger.info(f"Rebuild requested for '{profile_name}'. Adding back to queue.")
+                    current_profile["status"] = "queued"
+                    current_profile["rebuild_on_completion"] = False
+                    BUILD_QUEUE.append(profile_name)
+                
+                # Save the final state and clean up
+                _save_state(current_state)
+                RUNNING_PROCESSES.pop(profile_name, None)
+
             except Exception as e:
-                logger.error(f"Worker failed to start build for '{profile_name}': {e}", exc_info=True)
-                profile["status"] = "failed"
-                profile["last_run"] = {"outcome_note": f"Worker failed to start build: {e}"}
-                _save_state(state)
+                logger.error(f"Worker failed to execute build for '{profile_name}': {e}", exc_info=True)
+                # Ensure state is updated on failure
+                fail_state = _load_state()
+                fail_profile = fail_state.get(profile_name, {})
+                fail_profile["status"] = "failed"
+                fail_profile["last_run"] = {"outcome_note": f"Worker failed to start build: {e}"}
+                _save_state(fail_state)
+                RUNNING_PROCESSES.pop(profile_name, None)
         
         await asyncio.sleep(5)  # Wait 5 seconds before checking the queue again
 
 @asynccontextmanager
 async def lifespan(app: FastMCP):
     """Manages the startup and shutdown of the background worker task."""
-    worker_task = asyncio.create_task(build_worker())
+    # Start all background tasks
+    build_worker_task = asyncio.create_task(build_worker())
+    watcher_manager_task = asyncio.create_task(watcher_manager())
     yield
-    logger.info("Server shutting down, stopping build worker...")
-    worker_task.cancel()
+    # Stop all background tasks
+    logger.info("Server shutting down, stopping background tasks...")
+    watcher_manager_task.cancel()
+    build_worker_task.cancel()
     try:
-        await worker_task
+        await watcher_manager_task
+    except asyncio.CancelledError:
+        logger.info("Watcher manager successfully cancelled.")
+    try:
+        await build_worker_task
     except asyncio.CancelledError:
         logger.info("Build worker successfully cancelled.")
+    
+    # Gracefully stop any running watchdog observers
+    for observer in ACTIVE_WATCHERS.values():
+        observer.stop()
+        observer.join()
 
 
 # Create MCP server, now with the lifespan manager for our worker
@@ -138,10 +274,27 @@ def configure_build(profile_name: str, project_path: str, build_command: str, en
         "build_command": build_command,
         "environment": environment,
         "timeout": timeout,
-        "status": "configured"
+        "status": "configured",
+        "autobuild_enabled": False,
+        "rebuild_on_completion": False
     }
     _save_state(state)
     return {"message": f"Build profile '{profile_name}' configured successfully."}
+
+@mcp.tool()
+def toggle_autobuild(profile_name: str, enabled: bool) -> dict:
+    """Enables or disables the autobuild feature for a profile."""
+    logger.info(f"Setting autobuild for profile '{profile_name}' to {enabled}.")
+    state = _load_state()
+    profile = state.get(profile_name)
+
+    if not profile:
+        return {"error": f"Profile '{profile_name}' not found."}
+
+    profile["autobuild_enabled"] = enabled
+    _save_state(state)
+
+    return {"message": f"Autobuild for profile '{profile_name}' has been {'enabled' if enabled else 'disabled'}."}
 
 @mcp.tool()
 def get_build_status(profile_name: str) -> dict:
@@ -153,30 +306,12 @@ def get_build_status(profile_name: str) -> dict:
     if not profile:
         return {"error": f"Profile '{profile_name}' not found."}
 
-    status = profile.get("status")
-    if status == "running":
+    # For a running process, we can still provide instant feedback
+    if profile.get("status") == "running":
         pid = profile.get("last_run", {}).get("pid")
         if pid and not psutil.pid_exists(pid):
-            # The process has finished. Let's determine the outcome.
-            logger.info(f"Process for '{profile_name}' (PID: {pid}) has finished.")
-            process = RUNNING_PROCESSES.pop(profile_name, None)
-            
-            # We need to get the exit code. This requires a small change to how we manage processes.
-            # For now, we'll assume success if the process is gone. A better way is to check the exit code.
-            # We will simulate checking the return code. A real implementation would capture this.
-            return_code = process.wait() if process else 0 
-
-            if return_code == 0:
-                profile["status"] = "succeeded"
-                logger.info(f"Build '{profile_name}' marked as succeeded.")
-            else:
-                profile["status"] = "failed"
-                logger.warning(f"Build '{profile_name}' marked as failed with code {return_code}.")
-            
-            profile["last_run"]["end_time"] = datetime.now(timezone.utc).isoformat()
-            _save_state(state)
-            return {"status": profile["status"], "exit_code": return_code}
-
+             return {"status": "unknown", "note": "Process finished but worker has not updated state yet."}
+    
     return {"status": profile.get("status", "unknown")}
 
 @mcp.tool()
@@ -206,6 +341,7 @@ def start_build(profile_name: str) -> dict:
 
     # Update status to 'queued' and add to the queue
     profile["status"] = "queued"
+    profile["rebuild_on_completion"] = False # Ensure flag is reset on manual start
     _save_state(state)
     BUILD_QUEUE.append(profile_name)
 
