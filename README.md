@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.png" alt="AutoBuildMCP Logo" width="200"/>
+  <img src="logo.png" alt="AutoBuildMCP Logo" width="120"/>
 </div>
 
 # AutoBuildMCP: An MCP-Powered Build Automation Server
